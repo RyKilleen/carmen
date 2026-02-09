@@ -15,6 +15,7 @@ const MAP_FIT_PADDING = [40, 40];
 const MARKER_SIZE = 24;
 const COORD_DECIMAL_PLACES = 5;
 const PEER_LIST_REFRESH_MS = 5000;
+const HEADING_SMOOTHING = 0.25; // EMA weight for new readings (lower = smoother)
 
 /* ───── State ───── */
 const state = {
@@ -80,6 +81,16 @@ function showScreen(screen) {
   screen.classList.add('active');
 }
 
+const ARROW_SVG_PATH = 'M10 2 L16 16 L10 12 L4 16 Z';
+
+function arrowSvg(color) {
+  return `<svg width="20" height="20" viewBox="0 0 20 20"><path d="${ARROW_SVG_PATH}" fill="${color}" /></svg>`;
+}
+
+function accentColor(isSelf) {
+  return isSelf ? 'var(--accent)' : 'var(--accent2)';
+}
+
 /* ───── Geolocation & Orientation ───── */
 let currentHeading = null;
 
@@ -138,21 +149,42 @@ function startCompass() {
   }
 }
 
+let orientationListening = false;
+
 function listenOrientation() {
   // Prefer absolute orientation
   window.addEventListener('deviceorientationabsolute', onOrientation, true);
   window.addEventListener('deviceorientation', onOrientation, true);
+  orientationListening = true;
+}
+
+function stopOrientation() {
+  if (!orientationListening) return;
+  window.removeEventListener('deviceorientationabsolute', onOrientation, true);
+  window.removeEventListener('deviceorientation', onOrientation, true);
+  orientationListening = false;
+  currentHeading = null;
 }
 
 let lastOrientationBroadcast = 0;
 
+function smoothHeading(raw) {
+  if (currentHeading == null) return raw;
+  let diff = raw - currentHeading;
+  if (diff > 180) diff -= 360;
+  if (diff < -180) diff += 360;
+  return ((currentHeading + HEADING_SMOOTHING * diff) % 360 + 360) % 360;
+}
+
 function onOrientation(e) {
+  let raw = null;
   if (e.webkitCompassHeading != null) {
-    currentHeading = e.webkitCompassHeading;
-  } else if (e.absolute && e.alpha != null) {
-    currentHeading = (450 - e.alpha) % 360;
+    raw = e.webkitCompassHeading;
   } else if (e.alpha != null) {
-    currentHeading = (450 - e.alpha) % 360;
+    raw = (360 - e.alpha) % 360;
+  }
+  if (raw != null) {
+    currentHeading = smoothHeading(raw);
   }
   const now = Date.now();
   if (now - lastOrientationBroadcast >= ORIENTATION_THROTTLE_MS) {
@@ -182,6 +214,7 @@ function createChannel() {
     initMap();
     startGeo();
     startCompass();
+    refreshInterval = setInterval(renderPeers, PEER_LIST_REFRESH_MS);
     showToast('Channel created');
   });
 
@@ -255,6 +288,7 @@ function joinChannel() {
       initMap();
       startGeo();
       startCompass();
+      refreshInterval = setInterval(renderPeers, PEER_LIST_REFRESH_MS);
       showToast('Joined channel');
       // Send my location immediately if available
       if (state.myLocation) {
@@ -322,25 +356,20 @@ function broadcast(msg) {
 
 function broadcastMyLocation() {
   if (!state.myLocation) return;
-  const msg = { ...state.myLocation, type: 'location' };
-  console.log('[broadcast] sending location, connections:', state.connections.size, 'msg:', JSON.stringify(msg));
-  if (state.isCreator) {
-    // Creator: send to all joiners
-    broadcast(msg);
-  } else {
-    // Joiner: send to creator
-    for (const conn of state.connections.values()) {
-      conn.send(msg);
-    }
-  }
+  broadcast({ ...state.myLocation, type: 'location' });
 }
 
 /* ───── Leave / Cleanup ───── */
+let refreshInterval = null;
+
 function leaveChannel() {
   if (state.geoWatchId != null) {
     navigator.geolocation.clearWatch(state.geoWatchId);
     state.geoWatchId = null;
   }
+  stopOrientation();
+  clearInterval(refreshInterval);
+  refreshInterval = null;
   if (state.peer) {
     state.peer.destroy();
     state.peer = null;
@@ -375,70 +404,58 @@ function createMarkerIcon(heading, isSelf) {
   const rotation = heading != null ? Math.round(heading) : 0;
   return L.divIcon({
     className: '',
-    html: `<div class="map-marker${isSelf ? ' self' : ''}" style="transform: rotate(${rotation}deg)">➤</div>`,
+    html: `<div class="map-marker" style="transform: rotate(${rotation}deg)">${arrowSvg(accentColor(isSelf))}</div>`,
     iconSize: [MARKER_SIZE, MARKER_SIZE],
     iconAnchor: [MARKER_SIZE / 2, MARKER_SIZE / 2],
   });
 }
 
 /* ───── Rendering ───── */
-function renderPeers() {
-  // Collect all locations including self
-  const all = [];
-  if (state.myLocation) all.push({ ...state.myLocation, isSelf: true });
-  for (const loc of state.locations.values()) {
-    if (loc.peerId !== state.peer?.id) all.push(loc);
-  }
+function updateMapMarkers(locations) {
+  if (!map) return;
 
-  if (all.length === 0) {
-    peerListEl.innerHTML = '<p class="empty-state">Waiting for peers to join...</p>';
-    return;
-  }
+  const activePeerIds = new Set(locations.map((l) => l.peerId));
 
-  // Update map markers
-  if (map) {
-    const activePeerIds = new Set(all.map((l) => l.peerId));
-
-    // Remove markers for peers that left
-    for (const [pid, marker] of markers) {
-      if (!activePeerIds.has(pid)) {
-        map.removeLayer(marker);
-        markers.delete(pid);
-      }
-    }
-
-    const bounds = [];
-
-    for (const loc of all) {
-      if (loc.lat === 0 && loc.lng === 0) continue; // skip placeholder
-      const latlng = [loc.lat, loc.lng];
-      bounds.push(latlng);
-      const isSelf = loc.isSelf || false;
-      const icon = createMarkerIcon(loc.heading, isSelf);
-
-      if (markers.has(loc.peerId)) {
-        const m = markers.get(loc.peerId);
-        m.setLatLng(latlng);
-        m.setIcon(icon);
-      } else {
-        const m = L.marker(latlng, { icon })
-          .bindTooltip(escapeHtml(loc.name) + (isSelf ? ' (you)' : ''), { permanent: false, direction: 'top' })
-          .addTo(map);
-        markers.set(loc.peerId, m);
-      }
-    }
-
-    if (bounds.length > 0) {
-      if (bounds.length === 1) {
-        map.setView(bounds[0], MAP_MAX_ZOOM);
-      } else {
-        map.fitBounds(bounds, { padding: MAP_FIT_PADDING, maxZoom: MAP_MAX_ZOOM });
-      }
+  // Remove markers for peers that left
+  for (const [pid, marker] of markers) {
+    if (!activePeerIds.has(pid)) {
+      map.removeLayer(marker);
+      markers.delete(pid);
     }
   }
 
-  // Peer list cards
-  peerListEl.innerHTML = all.map((loc) => {
+  const bounds = [];
+
+  for (const loc of locations) {
+    if (loc.lat === 0 && loc.lng === 0) continue; // skip placeholder
+    const latlng = [loc.lat, loc.lng];
+    bounds.push(latlng);
+    const isSelf = loc.isSelf || false;
+    const icon = createMarkerIcon(loc.heading, isSelf);
+
+    if (markers.has(loc.peerId)) {
+      const m = markers.get(loc.peerId);
+      m.setLatLng(latlng);
+      m.setIcon(icon);
+    } else {
+      const m = L.marker(latlng, { icon })
+        .bindTooltip(escapeHtml(loc.name) + (isSelf ? ' (you)' : ''), { permanent: false, direction: 'top' })
+        .addTo(map);
+      markers.set(loc.peerId, m);
+    }
+  }
+
+  if (bounds.length > 0) {
+    if (bounds.length === 1) {
+      map.setView(bounds[0], MAP_MAX_ZOOM);
+    } else {
+      map.fitBounds(bounds, { padding: MAP_FIT_PADDING, maxZoom: MAP_MAX_ZOOM });
+    }
+  }
+}
+
+function renderPeerCards(locations) {
+  peerListEl.innerHTML = locations.map((loc) => {
     const headingDeg = loc.heading != null ? Math.round(loc.heading) : null;
     const arrowRotation = headingDeg != null ? headingDeg : 0;
     const isSelf = loc.isSelf || false;
@@ -447,7 +464,9 @@ function renderPeers() {
       <div class="peer-card${isSelf ? ' self' : ''}">
         <div class="peer-compass">
           <span class="arrow" style="transform: rotate(${arrowRotation}deg)"
-                title="${headingDeg != null ? headingDeg + '°' : 'no heading'}">➤</span>
+                title="${headingDeg != null ? headingDeg + '°' : 'no heading'}">
+            ${arrowSvg(accentColor(isSelf))}
+          </span>
         </div>
         <div class="peer-info">
           <div class="peer-name">
@@ -461,6 +480,22 @@ function renderPeers() {
         </div>
       </div>`;
   }).join('');
+}
+
+function renderPeers() {
+  const all = [];
+  if (state.myLocation) all.push({ ...state.myLocation, isSelf: true });
+  for (const loc of state.locations.values()) {
+    if (loc.peerId !== state.peer?.id) all.push(loc);
+  }
+
+  if (all.length === 0) {
+    peerListEl.innerHTML = '<p class="empty-state">Waiting for peers to join...</p>';
+    return;
+  }
+
+  updateMapMarkers(all);
+  renderPeerCards(all);
 }
 
 function escapeHtml(str) {
@@ -487,6 +522,3 @@ nameInput.addEventListener('keydown', (e) => {
 codeInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') joinBtn.click();
 });
-
-// Refresh time-ago every 5 seconds
-setInterval(renderPeers, PEER_LIST_REFRESH_MS);

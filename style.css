@@ -207,18 +207,11 @@ input[type="text"]:focus {
 }
 
 .map-marker {
-  color: var(--accent2);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 1.4rem;
-  line-height: 1;
   filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.5));
   transition: transform 0.3s ease;
-}
-
-.map-marker.self {
-  color: var(--accent);
 }
 
 /* Peer list */
