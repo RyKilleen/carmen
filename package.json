@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/app.ts --bundle --format=esm --target=es2020 --outfile=dist/app.js --sourcemap",
+    "watch": "npm run build -- --watch",
+    "typecheck": "tsc --noEmit",
+    "serve": "npx http-server -p 8000"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.21",
+    "esbuild": "^0.27.3",
+    "peerjs": "^1.5.5",
+    "typescript": "^5.9.3"
+  }
+}

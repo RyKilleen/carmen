@@ -1,21 +1,22 @@
+import type { AppState, LocationData, PeerDeps } from "./types";
 import {
   startGeo as _startGeo,
   startCompass as _startCompass,
   stopOrientation,
-} from "./geo.js";
+} from "./geo";
 import {
   createChannel as _createChannel,
   joinChannel as _joinChannel,
   broadcastMyLocation as _broadcastMyLocation,
   leaveChannel as _leaveChannel,
-} from "./peer.js";
+} from "./peer";
 
 const CHANNEL_CODE_LENGTH = 6;
 const TOAST_DURATION_MS = 3500;
 const JUST_NOW_THRESHOLD_S = 5;
 const MAP_INITIAL_ZOOM = 2;
 const MAP_MAX_ZOOM = 21;
-const MAP_FIT_PADDING = [40, 40];
+const MAP_FIT_PADDING: [number, number] = [40, 40];
 const MARKER_SIZE = 24;
 const MARKER_SCALE_ZOOM_THRESHOLD = 17;
 const MARKER_SCALE_FACTOR = 1.5;
@@ -36,14 +37,14 @@ const NOUNS = [
   "Walrus", "Yak", "Zebra", "Lynx", "Owl", "Wolf",
 ];
 
-function generateName() {
+function generateName(): string {
   const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
   const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
   return `${adj} ${noun}`;
 }
 
 /* ───── State ───── */
-const state = {
+const state: AppState = {
   name: "",
   code: "",
   isCreator: false,
@@ -53,45 +54,47 @@ const state = {
   locations: new Map(),
   geoWatchId: null,
   myLocation: null,
+  visibilityHandler: null,
+  beforeUnloadHandler: null,
 };
 
-let map = null;
-const markers = new Map();
+let map: L.Map | null = null;
+const markers = new Map<string, L.Marker>();
 let userHasInteracted = false;
 let programmaticMove = false;
-let knownPeerIds = new Set();
+let knownPeerIds = new Set<string>();
 
 /* ───── DOM refs ───── */
-const $ = (sel) => document.querySelector(sel);
-const welcomeScreen = $("#welcome-screen");
-const beaconScreen = $("#beacon-screen");
-const nameDisplay = $("#name-display");
-const rerollBtn = $("#reroll-btn");
-const codeInput = $("#code-input");
-const createBtn = $("#create-btn");
-const joinBtn = $("#join-btn");
-const copyBtn = $("#copy-btn");
-const leaveBtn = $("#leave-btn");
-const beaconCodeEl = $("#beacon-code");
-const peerListEl = $("#peer-list");
-const toastEl = $("#toast");
+const $ = (sel: string) => document.querySelector(sel)!;
+const welcomeScreen = $("#welcome-screen") as HTMLElement;
+const beaconScreen = $("#beacon-screen") as HTMLElement;
+const nameDisplay = $("#name-display") as HTMLElement;
+const rerollBtn = $("#reroll-btn") as HTMLButtonElement;
+const codeInput = $("#code-input") as HTMLInputElement;
+const createBtn = $("#create-btn") as HTMLButtonElement;
+const joinBtn = $("#join-btn") as HTMLButtonElement;
+const copyBtn = $("#copy-btn") as HTMLButtonElement;
+const leaveBtn = $("#leave-btn") as HTMLButtonElement;
+const beaconCodeEl = $("#beacon-code") as HTMLElement;
+const peerListEl = $("#peer-list") as HTMLElement;
+const toastEl = $("#toast") as HTMLElement;
 
 /* ───── Utilities ───── */
 const CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-function generateCode(len = CHANNEL_CODE_LENGTH) {
+function generateCode(len = CHANNEL_CODE_LENGTH): string {
   let code = "";
   const arr = crypto.getRandomValues(new Uint8Array(len));
   for (const b of arr) code += CHARSET[b % CHARSET.length];
   return code;
 }
 
-function peerIdFor(code) {
+function peerIdFor(code: string): string {
   return `way-${code}`;
 }
 
-let toastTimer;
-function showToast(msg, isError = false) {
+let toastTimer: ReturnType<typeof setTimeout>;
+function showToast(msg: string, isError = false): void {
   toastEl.textContent = msg;
   toastEl.className = "toast visible" + (isError ? " error" : "");
   clearTimeout(toastTimer);
@@ -100,14 +103,14 @@ function showToast(msg, isError = false) {
   }, TOAST_DURATION_MS);
 }
 
-function timeAgo(ts) {
+function timeAgo(ts: number): string {
   const diff = Math.max(0, Math.floor((Date.now() - ts) / 1000));
   if (diff < JUST_NOW_THRESHOLD_S) return "just now";
   if (diff < 60) return `${diff}s ago`;
   return `${Math.floor(diff / 60)}m ago`;
 }
 
-function showScreen(screen) {
+function showScreen(screen: HTMLElement): void {
   welcomeScreen.classList.remove("active");
   beaconScreen.classList.remove("active");
   screen.classList.add("active");
@@ -115,28 +118,28 @@ function showScreen(screen) {
 
 const ARROW_SVG_PATH = "M10 2 L16 16 L10 12 L4 16 Z";
 
-function markerSizeForZoom(zoom) {
+function markerSizeForZoom(zoom: number): number {
   if (zoom <= MARKER_SCALE_ZOOM_THRESHOLD) return MARKER_SIZE;
   const t = (zoom - MARKER_SCALE_ZOOM_THRESHOLD) / (MAP_MAX_ZOOM - MARKER_SCALE_ZOOM_THRESHOLD);
   return MARKER_SIZE * (1 + t * (MARKER_SCALE_FACTOR - 1));
 }
 
-function arrowSvg(color, size = 20) {
+function arrowSvg(color: string, size = 20): string {
   return `<svg width="${size}" height="${size}" viewBox="0 0 20 20"><path d="${ARROW_SVG_PATH}" fill="${color}" /></svg>`;
 }
 
-function accentColor(isSelf) {
+function accentColor(isSelf: boolean): string {
   return isSelf ? "var(--accent)" : "var(--accent2)";
 }
 
-function escapeHtml(str) {
+function escapeHtml(str: string): string {
   const d = document.createElement("div");
   d.textContent = str;
   return d.innerHTML;
 }
 
 /* ───── Map ───── */
-function initMap() {
+function initMap(): void {
   if (map) return;
   map = L.map("map").setView([0, 0], MAP_INITIAL_ZOOM);
   L.tileLayer(
@@ -159,7 +162,7 @@ function initMap() {
   });
 }
 
-function cleanupMap() {
+function cleanupMap(): void {
   if (map) {
     map.remove();
     map = null;
@@ -169,7 +172,7 @@ function cleanupMap() {
   knownPeerIds = new Set();
 }
 
-function createMarkerIcon(heading, isSelf, size = MARKER_SIZE) {
+function createMarkerIcon(heading: number | null, isSelf: boolean, size = MARKER_SIZE): L.DivIcon {
   const rotation = heading != null ? Math.round(heading) : 0;
   return L.divIcon({
     className: "",
@@ -180,7 +183,7 @@ function createMarkerIcon(heading, isSelf, size = MARKER_SIZE) {
 }
 
 /* ───── Rendering ───── */
-function updateMapMarkers(locations) {
+function updateMapMarkers(locations: (LocationData & { isSelf?: boolean })[]): void {
   if (!map) return;
 
   const activePeerIds = new Set(locations.map((l) => l.peerId));
@@ -192,18 +195,18 @@ function updateMapMarkers(locations) {
     }
   }
 
-  const bounds = [];
+  const bounds: L.LatLngTuple[] = [];
 
   for (const loc of locations) {
     if (loc.lat === 0 && loc.lng === 0) continue;
-    const latlng = [loc.lat, loc.lng];
+    const latlng: L.LatLngTuple = [loc.lat, loc.lng];
     bounds.push(latlng);
     const isSelf = loc.isSelf || false;
     const size = markerSizeForZoom(map.getZoom());
     const icon = createMarkerIcon(loc.heading, isSelf, size);
 
     if (markers.has(loc.peerId)) {
-      const m = markers.get(loc.peerId);
+      const m = markers.get(loc.peerId)!;
       m.setLatLng(latlng);
       m.setIcon(icon);
     } else {
@@ -235,7 +238,7 @@ function updateMapMarkers(locations) {
   }
 }
 
-function renderPeerCards(locations) {
+function renderPeerCards(locations: (LocationData & { isSelf?: boolean })[]): void {
   peerListEl.innerHTML = locations
     .map((loc) => {
       const headingDeg = loc.heading != null ? Math.round(loc.heading) : null;
@@ -265,8 +268,8 @@ function renderPeerCards(locations) {
     .join("");
 }
 
-function renderPeers() {
-  const all = [];
+function renderPeers(): void {
+  const all: (LocationData & { isSelf?: boolean })[] = [];
   if (state.myLocation) all.push({ ...state.myLocation, isSelf: true });
   for (const loc of state.locations.values()) {
     if (loc.peerId !== state.peer?.id) all.push(loc);
@@ -283,19 +286,19 @@ function renderPeers() {
 }
 
 /* ───── Module wrappers ───── */
-function broadcastMyLocation() {
+function broadcastMyLocation(): void {
   _broadcastMyLocation(state);
 }
 
-function startGeo() {
+function startGeo(): void {
   _startGeo(state, { broadcastMyLocation, renderPeers, showToast });
 }
 
-function startCompass() {
+function startCompass(): void {
   _startCompass();
 }
 
-const peerDeps = () => ({
+const peerDeps = (): PeerDeps => ({
   state,
   showToast,
   showScreen,
@@ -317,15 +320,15 @@ const peerDeps = () => ({
   welcomeScreen,
 });
 
-function createChannel() {
+function createChannel(): void {
   _createChannel(peerDeps());
 }
 
-function joinChannel() {
+function joinChannel(): void {
   _joinChannel(peerDeps());
 }
 
-function leaveChannel() {
+function leaveChannel(): void {
   _leaveChannel(peerDeps());
 }
 
