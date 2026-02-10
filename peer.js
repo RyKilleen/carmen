@@ -91,6 +91,11 @@ function maybePromoteToGreeter(disconnectedPeerId, state, deps, retries = 0) {
     console.log('[mesh] greeter peer registered:', greeterId);
   });
 
+  state.greeterPeer.on('disconnected', () => {
+    console.warn('[mesh] greeter disconnected from signaling, reconnecting…');
+    state.greeterPeer.reconnect();
+  });
+
   state.greeterPeer.on('connection', (conn) => {
     console.log('[mesh] greeter: incoming connection from:', conn.peer);
     setupConnection(conn, state, deps);
@@ -105,6 +110,22 @@ function maybePromoteToGreeter(disconnectedPeerId, state, deps, retries = 0) {
       setTimeout(() => maybePromoteToGreeter(disconnectedPeerId, state, deps, retries + 1), 2000);
     }
   });
+}
+
+function setupVisibilityReconnect(state) {
+  const handler = () => {
+    if (document.visibilityState !== 'visible') return;
+    if (state.peer?.disconnected) {
+      console.warn('[visibility] peer disconnected, reconnecting…');
+      state.peer.reconnect();
+    }
+    if (state.greeterPeer?.disconnected) {
+      console.warn('[visibility] greeter peer disconnected, reconnecting…');
+      state.greeterPeer.reconnect();
+    }
+  };
+  state.visibilityHandler = handler;
+  document.addEventListener('visibilitychange', handler);
 }
 
 function setupBeforeUnload(state) {
@@ -159,7 +180,8 @@ export function createChannel(deps) {
   });
 
   state.peer.on('disconnected', () => {
-    console.warn('[create] peer disconnected from signaling server');
+    console.warn('[create] disconnected from signaling, reconnecting…');
+    state.peer.reconnect();
   });
 
   state.peer.on('error', (err) => {
@@ -169,6 +191,7 @@ export function createChannel(deps) {
   });
 
   setupBeforeUnload(state);
+  setupVisibilityReconnect(state);
 }
 
 export function joinChannel(deps) {
@@ -211,7 +234,8 @@ export function joinChannel(deps) {
   });
 
   state.peer.on('disconnected', () => {
-    console.warn('[join] peer disconnected from signaling server');
+    console.warn('[join] disconnected from signaling, reconnecting…');
+    state.peer.reconnect();
   });
 
   state.peer.on('error', (err) => {
@@ -225,12 +249,17 @@ export function joinChannel(deps) {
   });
 
   setupBeforeUnload(state);
+  setupVisibilityReconnect(state);
 }
 
 export function leaveChannel(deps) {
   const { state, stopOrientation, cleanupMap, createBtn, joinBtn, showScreen, welcomeScreen } = deps;
 
-  // Remove beforeunload since we're cleaning up gracefully
+  // Remove event listeners since we're cleaning up gracefully
+  if (state.visibilityHandler) {
+    document.removeEventListener('visibilitychange', state.visibilityHandler);
+    state.visibilityHandler = null;
+  }
   if (state.beforeUnloadHandler) {
     window.removeEventListener('beforeunload', state.beforeUnloadHandler);
     state.beforeUnloadHandler = null;
