@@ -62,7 +62,7 @@ let map: L.Map | null = null;
 const markers = new Map<string, L.Marker>();
 let userHasInteracted = false;
 let programmaticMove = false;
-let knownPeerIds = new Set<string>();
+let peersFittedOnMap = new Set<string>();
 
 /* ───── DOM refs ───── */
 const $ = (sel: string) => document.querySelector(sel)!;
@@ -169,7 +169,7 @@ function cleanupMap(): void {
   }
   markers.clear();
   userHasInteracted = false;
-  knownPeerIds = new Set();
+  peersFittedOnMap = new Set();
 }
 
 function createMarkerIcon(heading: number | null, isSelf: boolean, size = MARKER_SIZE): L.DivIcon {
@@ -220,11 +220,14 @@ function updateMapMarkers(locations: (LocationData & { isSelf?: boolean })[]): v
     }
   }
 
-  const currentPeerIds = new Set(locations.map((l) => l.peerId));
-  const hasNewPeer = [...currentPeerIds].some((id) => !knownPeerIds.has(id));
-  knownPeerIds = currentPeerIds;
+  const currentFitted = new Set(bounds.length > 0
+    ? locations.filter((l) => l.lat !== 0 || l.lng !== 0).map((l) => l.peerId)
+    : []
+  );
+  const hasNewFittedPeer = [...currentFitted].some((id) => !peersFittedOnMap.has(id));
+  peersFittedOnMap = currentFitted;
 
-  if (bounds.length > 0 && (!userHasInteracted || hasNewPeer)) {
+  if (bounds.length > 0 && (!userHasInteracted || hasNewFittedPeer)) {
     programmaticMove = true;
     if (bounds.length === 1) {
       map.setView(bounds[0], MAP_MAX_ZOOM);
